@@ -122,48 +122,49 @@ func (this *RingBufferWithMiss) Bin() []*Protocol {
 	return this.element
 }
 
-func (this *RingBufferWithMiss) Read(bin []byte) int {
-	return this.buf.Read(bin)
+//func (this *RingBufferWithMiss) Read(bin []byte) int {
+//	return this.buf.Read(bin)
+//}
+
+//func (this *RingBufferWithMiss) Read(bin []byte) int {
+//	return this.buf.Read(bin)
+//}
+
+func (this *RingBufferWithMiss) Read() *Protocol {
+	var el *Protocol
+	if this.element[this.start+1%this.size]!=nil{
+		this.start += 1
+		el = this.element[this.start%this.size]
+		this.element[this.start%this.size] = nil
+	}
+	return el
 }
 
-func (this *RingBufferWithMiss) Write(data *Protocol, offset int, wsd int) []uint32 {
+func (this *RingBufferWithMiss) Write(data *Protocol, offset int) {
+	if this.size<=this.end-this.start{
+		panic("full buffer")
+	}
 	if this.end <= offset {
 		this.end = offset + 1
 	}
 	this.element[offset%this.size] = data
-	//this.hit[offset%this.size] = 1
-	//}
-	//if offset%3 != 0 {
-	//	return nil
-	//}
+}
+
+func (this *RingBufferWithMiss) Miss(wsd int) []uint32 {
 	var miss = make([]uint32, 0)
-	var rp = true
 	var mp = true
+	if this.start >= wsd { //起点小于窗口左端
+		mp = false
+	}
 	for i := this.start; ; i++ { //更新hit
-		//if offset%128 == 0 {
 		if i >= this.end {
 			break
 		}
-		if this.start >= wsd { //起点小于窗口左端
-			mp = false
-		}
-
-		if this.element[i%this.size] == nil {
-			rp = false
-		}
-
 		if mp {
 			if this.element[i%this.size] == nil {
 				miss = append(miss, uint32(i))
 			}
-		}
-
-		if rp {
-			this.start += 1
-			this.buf.Write(this.element[i%this.size].data)
-			this.element[i%this.size] = nil
-		}
-		if !rp && !mp {
+		} else {
 			break
 		}
 	}

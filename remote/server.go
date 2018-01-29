@@ -2,36 +2,38 @@ package main
 
 import (
 	"net/http"
-	"bufio"
 	"io/ioutil"
-	"bytes"
 	"fmt"
 	"time"
-	"ladder/mUDP"
 	"runtime"
 	"strconv"
+	"ladder/carrier"
+	"ladder/common"
 )
-
-const REMOTE_PORT = "1024"
-const UDP_PORT = 2000
 
 func server() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		bin, _ := ioutil.ReadAll(r.Body)
-		request, _ := http.ReadRequest(bufio.NewReader(bytes.NewReader(bin)))
-		if request == nil {
-			return
-		}
+		//rl,_,err :=bufio.NewReader(bytes.NewReader(bin)).ReadLine()
+		//method :=
+		//if err!=nil{
+		//	fmt.Fprintln(os.Stderr,err)
+		//}
+		//request, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(bin)))
+		//if err != nil {
+		//	fmt.Fprintln(os.Stderr,err)
+		//	return
+		//}
 		q := r.URL.Query()
 		id, _ := strconv.Atoi(q.Get("id"))
 		if q.Get("close") != "" {
-			mUDP.CloseRequest(id)
+			//todo mUDP.CloseRequest(id)
 		} else {
-			mUDP.NewRequest(id, bin)
+			carrier.NewRequest(id, bin)
 		}
 		return
 	})
-	server := &http.Server{Addr: "0.0.0.0:" + REMOTE_PORT, Handler: nil}
+	server := &http.Server{Addr: "0.0.0.0:" + common.REMOTE_PORT, Handler: nil}
 	server.SetKeepAlivesEnabled(false)
 	err := server.ListenAndServeTLS("./server.crt", "./server.key")
 	if err != nil {
@@ -46,9 +48,6 @@ func main() {
 			fmt.Println("cr:", runtime.NumGoroutine())
 		}
 	}()
-	err, _ := mUDP.TunnelRemote.Listen(UDP_PORT)
-	if err != nil {
-		panic(err)
-	}
+	carrier.Remote.Listen(common.UDP_PORT)
 	server()
 }

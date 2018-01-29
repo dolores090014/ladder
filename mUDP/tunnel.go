@@ -3,73 +3,129 @@ package mUDP
 import (
 	"net"
 	"fmt"
-	"sync"
 	"time"
 	"context"
 	"strconv"
+	"bytes"
+	"encoding/binary"
+	"sync"
 	"math"
-	"ladder/common"
 )
 
-type tunnel struct {
-	ctx        context.Context
-	able       bool
-	delay      int16 //ms
-	l          *sync.Mutex
-	m          map[int]*Client
-	r          map[int]*Carrier
-	priorChan  chan []byte
-	normalChan chan []byte
-	//local      *net.UDPAddr
-	remote     *net.UDPAddr
-	conn       *net.UDPConn
+type Tunnel struct {
+	ctx         context.Context
+	able        bool
+	delay       int16 //ms
+	ackList     map[uint16]*Protocol
+	priorChan   chan []byte
+	normalChan  chan []byte
+	readChan    chan *Protocol
+	writeBuffer *SimpleRingBuffer
+	readBuffer  *RingBufferWithMiss
+	remote      *net.UDPAddr
+	window      *window
+	conn        *net.UDPConn
 }
 
-var TunnelLocal = &tunnel{
-	ctx: context.Background(),
-	l:   &sync.Mutex{},
-	m:   make(map[int]*Client),
-}
-
-var TunnelRemote = &tunnel{
-	ctx:        context.Background(),
-	priorChan:  make(chan []byte, 1024*512),
-	normalChan: make(chan []byte, 1024*1024),
-	l:          &sync.Mutex{},
-	r:          make(map[int]*Carrier),
-}
-
-func (this *tunnel) Lock() {
-	this.l.Lock()
-}
-
-func (this *tunnel) Unlock() {
-	this.l.Unlock()
-}
-
-/*
-local
- */
-func (this *tunnel) Write(bin []byte) {
-	this.conn.Write(bin)
-}
-
-/*
-remote
- */
-func (this *tunnel) PriorWrite(bin []byte, prior bool) {
-	if prior {
-		common.PushChan(bin, this.priorChan)
+func NewTunnel(c bool) *Tunnel {
+	if c {
+		return &Tunnel{
+			ackList: make(map[uint16]*Protocol),
+			readChan:make(chan *Protocol,128),
+		}
 	} else {
-		common.PushChan(bin, this.normalChan)
+		return &Tunnel{
+			priorChan:  make(chan []byte, 1024*512),
+			normalChan: make(chan []byte, 1024*1024),
+		}
 	}
 }
 
-func (this *tunnel) Able() bool {
+func (this *Tunnel) SendMsgToLocal(id uint16, b []byte) error {
+	lenth := 0
+	for {
+		el := NewProtocol()
+		el.Act = PROTOCOL_DATA
+		el.RequestId = uint16(id)
+		if lenth == 0 {
+			lenth = len(el.data)
+		}
+		if len(b) <= lenth {
+			copy(el.data, b)
+			el.data = el.data[:len(b)]
+			this.writeBuffer.Write(el)
+			break
+		} else {
+			copy(el.data, b[:lenth])
+			b = b[lenth:]
+			this.writeBuffer.Write(el)
+		}
+	}
+	return nil
+}
+
+/*
+from buffer to connect
+ */
+func (this *Tunnel) Send() {
+	go func() {
+		for {
+			var bin []byte
+			select {
+			case <-this.ctx.Done():
+				close(this.priorChan)
+				close(this.normalChan)
+				return
+			case data, ok := <-this.priorChan:
+				if !ok {
+					return
+				}
+				bin = data
+			default:
+				select {
+				case data, ok := <-this.priorChan:
+					if !ok {
+						return
+					}
+					bin = data
+				case data, ok := <-this.normalChan:
+					if !ok {
+						return
+					}
+					bin = data
+				}
+			}
+			this.conn.WriteToUDP(bin, this.remote)
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-this.ctx.Done():
+				return
+			default:
+				time.Sleep(100 * time.Millisecond)
+				bin, n, start := this.writeBuffer.Read(int(this.window.window()))
+				if n == 0 {
+					continue
+				}
+				bin = bin[:n]
+				for k, v := range bin {
+					el := (*Protocol)(v)
+					el.windowStart = uint32(start)
+					el.offset = uint32(start + k)
+					this.normalChan <- el.EncodeDataPack()
+				}
+			}
+		}
+	}()
+}
+
+func (this *Tunnel) Able() bool {
 	return this.able
 }
 
-func (this *tunnel) heartBeats(ctx context.Context) {
+func (this *Tunnel) heartBeats(ctx context.Context) {
 	for {
 		time.Sleep(time.Duration(HEART_BEAT_INTERVAL) * time.Second)
 		select {
@@ -77,7 +133,7 @@ func (this *tunnel) heartBeats(ctx context.Context) {
 			return
 		default:
 			p := NewProtocol()
-			p.act = PROTOCOL_HEART_BEATS
+			p.Act = PROTOCOL_HEART_BEATS
 			this.conn.Write(p.EncodeHeartBeatPack())
 			//p.windowStart = uint32(this.buffer.start)
 			//this.sendChan <- p.EncodeHeartBeatPack()
@@ -85,29 +141,10 @@ func (this *tunnel) heartBeats(ctx context.Context) {
 	}
 }
 
-func (this *tunnel) Remove(e *Client) {
-	this.l.Lock()
-	defer this.l.Unlock()
-	delete(this.m, e.id)
-}
-
-func (this *tunnel) getID(con *Client) int {
-	max := 1<<16 - 1
-	this.l.Lock()
-	defer this.l.Unlock()
-	for i := 1; i <= max; i++ {
-		if _, ok := this.m[i]; !ok {
-			this.m[i] = con
-			return i
-		}
-	}
-	return 0
-}
-
 /*
 local receive
 */
-func (this *tunnel) receive() {
+func (this *Tunnel) receiveMsgFromRemote() {
 	for {
 		var bin = make([]byte, UDP_SIZE)
 		n, err := this.conn.Read(bin)
@@ -116,59 +153,77 @@ func (this *tunnel) receive() {
 		}
 		bin = bin[:n]
 		el := NewProtocol().Decode(bin)
-		this.l.Lock()
 		defer func() {
-			if recover()!=nil{
-				fmt.Println(el.requestId)
+			if recover() != nil {
+				fmt.Println(el.RequestId)
 			}
 		}()
-		this.m[int(el.requestId)].ch <- el
-		this.l.Unlock()
-	}
-}
-
-/*
-remote receive
- */
-func (this *tunnel) Receive() {
-	once := &sync.Once{}
-	for {
-		var bin = make([]byte, UDP_SIZE)
-		n,l ,err := this.conn.ReadFromUDP(bin)
-		if err != nil {
-			fmt.Println(err)
-		}
-		if this.remote == nil{
-			this.remote = l
-		}
-		bin = bin[:n]
-		el := NewProtocol().Decode(bin)
-		if el.act == PROTOCOL_HAND {
-			once.Do(func() {
-				this.able = true
-				this.delay = int16(math.Ceil(float64(time.Now().Sub(el.time)) / float64(1000000)))
-				go this.heartBeats(this.ctx)
-			})
-		} else {
-			this.l.Lock()
-			if v, ok := this.r[int(el.requestId)]; ok {
-				v.ch <- el
+		this.readBuffer.Write(el, int(el.offset))
+		for{
+			ele := this.readBuffer.Read()
+			if ele==nil{
+				break
 			}
-			this.l.Unlock()
+			this.readChan<-ele
 		}
+		miss := this.readBuffer.Miss(int(el.windowStart)) //丢包
+		this.GetMissPackAndRequestAgain(miss)
 	}
 }
 
-func (this *tunnel) Listen(port int) (error, int) {
-	err, p := this.listen(port)
-	if err == nil {
-		go this.send()
-		go this.Receive()
+func (this *Tunnel) GetMissPackAndRequestAgain(miss []uint32) {
+	if len(miss) <= 0 {
+		return
 	}
-	return err, p
+	p := NewProtocol()
+	lenth := len(miss)
+	p.Act = PROTOCOL_ACK
+	p.id = this.getAckId()
+	var buff = &bytes.Buffer{}
+	for i := 0; i < 100 && i < lenth; i++ {
+		j := miss[i]
+		binary.Write(buff, binary.LittleEndian, &j)
+	}
+	p.data = buff.Bytes()
+	this.conn.Write(p.EncodeMissPack())
 }
 
-func (this *tunnel) listen(port int) (error, int) {
+func (this *Tunnel) Connect(addr string) error {
+	udpAdr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return err
+	}
+	this.conn, err = net.DialUDP("udp", nil, udpAdr)
+	if err != nil {
+		return err
+	}
+
+	p := NewProtocol()
+	p.Act = PROTOCOL_HAND
+	p.time = time.Now()
+	b := p.EncodeHandPack()
+
+	go this.receiveMsgFromRemote()
+
+	time.Sleep(10 * time.Millisecond)
+	this.conn.Write(b)
+	this.conn.Write(b)
+	this.conn.Write(b)
+	time.Sleep(100 * time.Millisecond)
+
+	return nil
+}
+
+//func (this *Tunnel) Listen(port int) (error, int) {
+//	err, p := this.listen(port)
+//	if err == nil {
+//		go this.send()
+//		go this.receiveMsgFromLocal()
+//	}
+//	return err, p
+//}
+
+func (this *Tunnel) Listen(port int) (error, int) {
 	if port > 0 {
 		udp, err := net.ResolveUDPAddr("udp", "0.0.0.0:"+strconv.Itoa(port))
 		if err != nil {
@@ -195,59 +250,125 @@ func (this *tunnel) listen(port int) (error, int) {
 	return LISTEN_FAIL, 0
 }
 
-func (this *tunnel) Connect(addr string) error {
-	udpAdr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return err
+func (this *Tunnel) speedControll(ctx context.Context) {
+	var loadControll = func(i int) {
+		el := NewProtocol()
+		el.Act = PROTOCOL_WINDOW
+		el.id = this.getAckId()
+		switch {
+		case i < 25:
+			el.wr = 400
+		case 25 <= i && i < 50:
+			el.wr = 200
+		case 50 <= i && i < 75:
+			el.wr = 100
+		case 75 <= i && i < 100:
+			el.wr = 50
+		case 100 <= i:
+			el.wr = 0
+		}
+		this.conn.Write(el.EncodeWindowPack())
 	}
-	this.conn, err = net.DialUDP("udp", nil, udpAdr)
-	if err != nil {
-		return err
+	var congestion = func() {
+		r := this.readBuffer.MissRate()
+		el := NewProtocol()
+		el.Act = PROTOCOL_WINDOW
+		el.id = this.getAckId()
+		switch {
+		case r < 5:
+			el.wr = 100
+		case 5 <= r && r < 100:
+			el.wr = 75
+		case 100 <= r && r < 200:
+			el.wr = 50
+		case 500 < r:
+			el.wr = 0
+		}
+		this.conn.Write(el.EncodeWindowPack())
 	}
-
-	p := NewProtocol()
-	p.act = PROTOCOL_HAND
-	p.time = time.Now()
-	b := p.EncodeHandPack()
-
-	go this.receive()
-
-	time.Sleep(10 * time.Millisecond)
-	this.Write(b)
-	this.Write(b)
-	this.Write(b)
-	time.Sleep(100 * time.Millisecond)
-
-	return nil
+	for {
+		time.Sleep(1 * time.Second)
+		load := 100 * this.readBuffer.Len() / this.readBuffer.Size() //buffer 占用百分
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			loadControll(load) //缓存区控制
+			congestion()       //拥塞控制
+		}
+	}
 }
 
-func (this *tunnel) send() {
+func (this *Tunnel) getAckId() uint16 {
+	for i := uint16(1); i <= 255; i++ {
+		if _, ok := this.ackList[i]; !ok {
+			return i
+		}
+	}
+	panic("ack id fail")
+}
+
+func (this *Tunnel) sendAgain(offset int) {
+	el := this.writeBuffer.ReadOffset(offset)
+	el.offset = uint32(offset)
+	this.priorChan <- el.EncodeDataPack()
+}
+
+func (this *Tunnel) Write(bin []byte) {
+	this.conn.Write(bin)
+}
+
+func (this *Tunnel) read(ctx context.Context) {
 	for {
-		var bin []byte
 		select {
-		//case <-ctx.Done():
-		//	close(this.priorChan)
-		//	close(this.normalChan)
-		//	return
-		case data, ok := <-this.priorChan:
-			if !ok {
+		case <-ctx.Done():
+			return
+		default:
+			var bin = make([]byte, 512)
+			n, _ := this.conn.Read(bin)
+			el := NewProtocol().Decode(bin[:n])
+			switch el.Act {
+			case PROTOCOL_HEART_BEATS:
+				//this.buffer.start = int(el.windowStart)
+			case PROTOCOL_SERIAL:
+				for _, v := range el.missList {
+					go this.sendAgain(int(v))
+				}
+			case PROTOCOL_WINDOW:
+				this.window.speedControll(float32(el.wr / 100))
+			case PROTOCOL_END:
+				//this.Close()
 				return
 			}
-			bin = data
-		default:
-			select {
-			case data, ok := <-this.priorChan:
-				if !ok {
-					return
-				}
-				bin = data
-			case data, ok := <-this.normalChan:
-				if !ok {
-					return
-				}
-				bin = data
-			}
 		}
-		this.conn.WriteToUDP(bin,this.remote)
 	}
+}
+
+func (this *Tunnel) receiveMsgFromLocal() {
+	once := &sync.Once{}
+	for {
+		var bin = make([]byte, UDP_SIZE)
+		n, l, err := this.conn.ReadFromUDP(bin)
+		if err != nil {
+			fmt.Println(err)
+		}
+		if this.remote == nil {
+			this.remote = l
+		}
+		bin = bin[:n]
+		el := NewProtocol().Decode(bin)
+		if el.Act == PROTOCOL_HAND {
+			once.Do(func() {
+				this.able = true
+				this.delay = int16(math.Ceil(float64(time.Now().Sub(el.time)) / float64(1000000)))
+				go this.heartBeats(this.ctx)
+			})
+		} else {
+			this.readChan<-el
+		}
+	}
+}
+
+func (this *Tunnel)Read() *Protocol {
+	return <-this.readChan
 }

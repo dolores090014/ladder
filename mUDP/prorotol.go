@@ -22,7 +22,7 @@ const (
 )
 
 type Protocol struct {
-	act         int8      //-1
+	Act         int8      //-1
 	id          uint16    //--需要ack的包的编号
 	wr          uint16    //---窗口大小倍率
 	windowStart uint32    //----
@@ -31,12 +31,8 @@ type Protocol struct {
 	time        time.Time //-----
 	data        []byte    //------
 	missList    []uint32  //-------
-	requestId   uint16
+	RequestId   uint16
 	bin         []byte
-}
-
-func (this *Protocol) Bin() []byte {
-	return this.bin
 }
 
 func NewProtocol() *Protocol {
@@ -46,9 +42,18 @@ func NewProtocol() *Protocol {
 	}
 }
 
+func (this *Protocol) Data() []byte {
+	return this.data
+}
+
+func (this *Protocol) Bin() []byte {
+	return this.bin
+}
+
+
 /*
 	数据包
-	act -> data
+	Act -> data
 	window start
 	offset
 	binary
@@ -59,28 +64,28 @@ func (this *Protocol) EncodeDataPack() []byte {
 			fmt.Println(this)
 		}
 	}()
-	this.bin[0] = byte(this.act)
+	this.bin[0] = byte(this.Act)
 	binary.LittleEndian.PutUint32(this.bin[1:5], this.windowStart)
 	binary.LittleEndian.PutUint32(this.bin[5:9], this.offset)
-	binary.LittleEndian.PutUint16(this.bin[9:11], this.requestId)
+	binary.LittleEndian.PutUint16(this.bin[9:11], this.RequestId)
 	copy(this.bin[11:], this.data)
 	this.bin = this.bin[:11+len(this.data)]
 	return this.bin
 }
 
-//func (this *Protocol) SetAct(act int)  {
-//	this.act = PROTOCOL_HEART_BEATS
-//}
+func (this *Protocol) SetAct(Act int)  {
+	this.Act = PROTOCOL_HEART_BEATS
+}
 
 func (this *Protocol) EncodeHeartBeatPack() []byte {
-	this.bin[0] = byte(this.act)
+	this.bin[0] = byte(this.Act)
 	binary.LittleEndian.PutUint32(this.bin[1:5], this.windowStart)
 	this.bin = this.bin[:5]
 	return this.bin
 }
 
 func (this *Protocol) EncodeWindowPack() []byte {
-	this.bin[0] = byte(this.act)
+	this.bin[0] = byte(this.Act)
 	binary.LittleEndian.PutUint16(this.bin[1:3], this.wr)
 	this.bin = this.bin[:3]
 	return this.bin
@@ -88,29 +93,29 @@ func (this *Protocol) EncodeWindowPack() []byte {
 
 func (this *Protocol) EncodeHandPack() []byte {
 	u := this.time.UnixNano()
-	this.bin[0] = byte(this.act)
+	this.bin[0] = byte(this.Act)
 	binary.LittleEndian.PutUint64(this.bin[1:9], uint64(u))
 	this.bin = this.bin[:9]
 	return this.bin
 }
 
 func (this *Protocol) EncodeMissPack() []byte {
-	this.bin[0] = byte(this.act)
+	this.bin[0] = byte(this.Act)
 	copy(this.bin[1:], this.data)
 	this.bin = this.bin[:1+len(this.data)]
 	return this.bin
 }
 
 func (this *Protocol) EncodeEndSign() []byte {
-	this.bin[0] = byte(this.act)
-	binary.LittleEndian.PutUint16(this.bin[1:3], this.requestId)
+	this.bin[0] = byte(this.Act)
+	binary.LittleEndian.PutUint16(this.bin[1:3], this.RequestId)
 	this.bin = this.bin[:3]
 	return this.bin
 }
 
 func (this *Protocol) Decode(bin []byte) *Protocol {
 	this.decodeAct(bin)
-	switch this.act {
+	switch this.Act {
 	case PROTOCOL_HAND:
 		this.decodeHandPack(bin)
 	case PROTOCOL_HEART_BEATS:
@@ -138,13 +143,13 @@ func (this *Protocol) decodeHeartBeatPack(bin []byte) *Protocol {
 func (this *Protocol) decodeDataPack(bin []byte) *Protocol {
 	this.windowStart = binary.LittleEndian.Uint32(bin[1:5])
 	this.offset = binary.LittleEndian.Uint32(bin[5:9])
-	this.requestId = binary.LittleEndian.Uint16(bin[9:11])
+	this.RequestId = binary.LittleEndian.Uint16(bin[9:11])
 	this.data = bin[11:]
 	return this
 }
 
 func (this *Protocol) decodeEndSign(bin []byte) *Protocol {
-	this.requestId = binary.LittleEndian.Uint16(bin[1:3])
+	this.RequestId = binary.LittleEndian.Uint16(bin[1:3])
 	return this
 }
 
@@ -154,7 +159,7 @@ func (this *Protocol) decodeWindowPack(bin []byte) *Protocol {
 }
 
 func (this *Protocol) decodeAct(bin []byte) *Protocol {
-	this.act = int8(bin[0])
+	this.Act = int8(bin[0])
 	return this
 }
 
@@ -169,7 +174,7 @@ func (this *Protocol) decodeMissPack(bin []byte) *Protocol {
 
 func BenchmarkMain() {
 	el := NewProtocol()
-	el.act = PROTOCOL_DATA
+	el.Act = PROTOCOL_DATA
 	el.windowStart = 233
 	el.windowSize = 555
 	el.offset = 666
@@ -179,13 +184,13 @@ func BenchmarkMain() {
 
 func BenchmarkMain2() {
 	el := &Protocol{}
-	el.act = PROTOCOL_DATA
+	el.Act = PROTOCOL_DATA
 	el.windowStart = 233
 	el.windowSize = 555
 	el.offset = 666
 	el.bin = []byte{233}
 	var bin = make([]byte, 512)
-	bin[0] = byte(el.act)
+	bin[0] = byte(el.Act)
 	binary.LittleEndian.PutUint32(bin[1:5], el.windowStart)
 	binary.LittleEndian.PutUint32(bin[5:9], el.windowSize)
 	binary.LittleEndian.PutUint32(bin[9:13], el.offset)
