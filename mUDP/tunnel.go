@@ -179,9 +179,11 @@ func (this *Tunnel) ReceiveMsgFromRemote() {
 				fmt.Println(el.RequestId)
 			}
 		}()
+		fmt.Println("write buffer",el.RequestId)
 		this.readBuffer.Write(el, int(el.offset))
 		for {
 			ele := this.readBuffer.Read()
+			fmt.Println("read buffer",ele.RequestId)
 			if ele == nil {
 				break
 			}

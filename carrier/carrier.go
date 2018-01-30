@@ -46,16 +46,12 @@ func (this *carrier) readRequestFromBrowser() {
 		common.HttpsGet(common.REMOTE_ADDR+"?id="+strconv.Itoa(this.requestId), bin)
 		if err != nil {
 			fmt.Println("brower err:", err)
-			this.Close()
+			this.CloseLocal()
 			return
 		}
 	}
 }
 
-func (this *carrier) end() {
-	this.cancel()
-	this.conn.Close()
-}
 
 func (this *carrier) getDataFromWebSite() {
 	for {
@@ -66,8 +62,12 @@ func (this *carrier) getDataFromWebSite() {
 			n, err := this.conn.Read(bin)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
-				this.Close()
+				this.CloseRemote()
 				return
+			}
+			if this.requestId!=1{
+				fmt.Println("response")
+				fmt.Println(string(bin))
 			}
 			err = Remote.tunnel.SendMsgToLocal(uint16(this.requestId), bin[:n])
 			if err != nil {
@@ -79,7 +79,8 @@ func (this *carrier) getDataFromWebSite() {
 	}
 }
 
-func (this *carrier) Close() {
+func (this *carrier) CloseLocal() {
+	defer func() {recover()}()
 	el := mUDP.NewProtocol()
 	el.SetAct(mUDP.PROTOCOL_END)
 	el.RequestId = uint16(this.requestId)
@@ -87,7 +88,13 @@ func (this *carrier) Close() {
 	Client.tunnel.Write(el.EncodeEndSign())
 	Client.tunnel.Write(el.EncodeEndSign())
 	Client.tunnel.Write(el.EncodeEndSign())
-	this.end()
+	this.cancel()
+	this.conn.Close()
+}
+func (this *carrier) CloseRemote() {
+	defer func() {recover()}()
+	this.cancel()
+	this.conn.Close()
 }
 
 func (this *carrier) readMsg() {

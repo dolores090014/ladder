@@ -5,6 +5,8 @@ import (
 	"time"
 	"ladder/carrier"
 	"ladder/common"
+	"fmt"
+	"runtime"
 )
 
 func forward(localTCP *net.TCPConn) {
@@ -27,6 +29,12 @@ func tcpServer() {
 }
 
 func main() {
+	go func() {
+		for{
+			fmt.Println("gr:",runtime.NumGoroutine())
+			time.Sleep(1*time.Second)
+		}
+	}()
 	carrier.Client.Connect("127.0.0.1:2000")
 	tcpServer()
 }

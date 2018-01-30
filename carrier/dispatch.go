@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"net"
 	"context"
+	"net/http"
 )
 
 type dis struct {
@@ -82,6 +83,7 @@ func (this *dis) Register(c *carrier) {
 func (this *dis) Dispatch() {
 	for {
 		el := this.tunnel.Read()
+		fmt.Println(el.RequestId)
 		this.m[int(el.RequestId)].ch <- el
 	}
 }
@@ -126,6 +128,8 @@ func NewRequest(id int, bin []byte) {
 	} else {
 		Remote.l.Unlock()
 		//b1, _, _ := bufio.NewReader(bytes.NewReader(bin)).ReadLine()
+
+		/***********************
 		reader := bufio.NewReader(bytes.NewReader(bin))
 		l1, _, _ := reader.ReadLine()
 		method := strings.Split(string(l1), " ")[0]
@@ -133,6 +137,15 @@ func NewRequest(id int, bin []byte) {
 		host := strings.Split(string(l2), ":")[1]
 		fmt.Println("l2:", string(l2))
 		host = strings.Replace(host, " ", "", -1)
+		/***********************/
+		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(bin)))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connect website fail", err)
+			return
+		}
+		method := req.Method
+		host := req.Host
+		fmt.Println(id,"-",req.URL)
 		if method == "" || host == "" {
 			fmt.Fprintln(os.Stderr, "analysis request fail")
 			fmt.Fprintln(os.Stderr, string(bin))
