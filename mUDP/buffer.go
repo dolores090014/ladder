@@ -132,6 +132,9 @@ func (this *RingBufferWithMiss) Bin() []*Protocol {
 
 func (this *RingBufferWithMiss) Read() *Protocol {
 	var el *Protocol
+	if this.start>=this.end{
+		return nil
+	}
 	if this.element[this.start+1%this.size]!=nil{
 		this.start += 1
 		el = this.element[this.start%this.size]

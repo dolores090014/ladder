@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"fmt"
 	"ladder/common"
+	"os"
 )
 
 type carrier struct {
@@ -38,6 +39,9 @@ func (this *carrier) readRequestFromBrowser() {
 	for {
 		bin := make([]byte, 1024*8)
 		n, err := this.conn.Read(bin)
+		if n == 0 {
+			continue
+		}
 		bin = bin[:n]
 		common.HttpsGet(common.REMOTE_ADDR+"?id="+strconv.Itoa(this.requestId), bin)
 		if err != nil {
@@ -61,6 +65,7 @@ func (this *carrier) getDataFromWebSite() {
 			bin := make([]byte, 1024)
 			n, err := this.conn.Read(bin)
 			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				this.Close()
 				return
 			}
@@ -92,7 +97,7 @@ func (this *carrier) readMsg() {
 			return
 		default:
 			el := <-this.ch
-			switch el.Act{
+			switch el.Act {
 			case mUDP.PROTOCOL_END:
 				this.cancel()
 			}

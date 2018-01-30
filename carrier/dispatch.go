@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 	"strconv"
-	"net/http"
 	"net"
+	"context"
 )
 
 type dis struct {
@@ -37,6 +37,7 @@ func init() {
 
 func (this *dis) Connect(addr string) {
 	err := this.tunnel.Connect(addr)
+	go this.Dispatch()
 	if err != nil {
 		panic(err)
 	}
@@ -47,7 +48,7 @@ func (this *dis) Connect(addr string) {
 
 func (this *dis) Listen(port int) {
 	err, _ := this.tunnel.Listen(port)
-	go this.tunnel.Send()
+	go this.Dispatch()
 	if err != nil {
 		panic(err)
 	}
@@ -72,24 +73,26 @@ func (this *dis) getID(con *carrier) int {
 	return 0
 }
 
-func (this *dis) Regester(c *carrier) {
+func (this *dis) Register(c *carrier) {
 	this.l.Lock()
 	defer this.l.Unlock()
 	this.m[c.requestId] = c
 }
 
-func (this *dis) Dispatch(el []*mUDP.Protocol) {
-	if len(el) <= 0 {
-		return
-	}
-	for _, v := range el {
-		this.m[int(v.RequestId)].ch <- v
+func (this *dis) Dispatch() {
+	for {
+		el := this.tunnel.Read()
+		this.m[int(el.RequestId)].ch <- el
 	}
 }
 
 func NewCarrier(tcp *net.TCPConn) *carrier {
+	ctx, cancel := context.WithCancel(context.Background())
 	c := &carrier{
-		conn: tcp,
+		conn:   tcp,
+		ctx:    ctx,
+		ch:     make(chan *mUDP.Protocol, 32),
+		cancel: cancel,
 	}
 	c.requestId = Client.getID(c)
 	if c.requestId == 0 {
@@ -100,43 +103,61 @@ func NewCarrier(tcp *net.TCPConn) *carrier {
 	return c
 }
 
+func NewCarrier2(id int, tcp *net.TCPConn) *carrier {
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &carrier{
+		conn:   tcp,
+		ctx:    ctx,
+		ch:     make(chan *mUDP.Protocol, 32),
+		cancel: cancel,
+	}
+	c.requestId = id
+	Remote.Register(c)
+	go c.getDataFromWebSite()
+	go c.readMsg()
+	return c
+}
+
 func NewRequest(id int, bin []byte) {
 	Remote.l.Lock()
-	defer Remote.l.Unlock()
 	if v, ok := Remote.m[id]; ok {
+		Remote.l.Unlock()
 		v.conn.Write(bin)
 	} else {
+		Remote.l.Unlock()
 		//b1, _, _ := bufio.NewReader(bytes.NewReader(bin)).ReadLine()
-		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(bin)))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err, "h:", )
+		reader := bufio.NewReader(bytes.NewReader(bin))
+		l1, _, _ := reader.ReadLine()
+		method := strings.Split(string(l1), " ")[0]
+		l2, _, _ := reader.ReadLine()
+		host := strings.Split(string(l2), ":")[1]
+		fmt.Println("l2:", string(l2))
+		host = strings.Replace(host, " ", "", -1)
+		if method == "" || host == "" {
+			fmt.Fprintln(os.Stderr, "analysis request fail")
+			fmt.Fprintln(os.Stderr, string(bin))
 			return
 		}
 		port := 80
-		if req.Method == "CONNECT" {
+		if method == "CONNECT" {
 			port = 443
 		}
-		ips, err := net.LookupIP(strings.Split(req.Host, ":")[0])
+		ips, err := net.LookupIP(strings.Split(host, ":")[0])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "get ip fail", err)
 		}
 		url := ips[0].String() + ":" + strconv.Itoa(port)
 		adr2, err := net.ResolveTCPAddr("tcp", url)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connect website fail", err)
+		}
 		conn, err := net.DialTCP("tcp", nil, adr2)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "connect website fail", err)
 			return
 		}
-		c := &carrier{
-			conn: conn,
-		}
-		c.requestId = id
-		Remote.Regester(c)
-
-		go c.getDataFromWebSite()
-		go c.readMsg()
-
-		if req.Method == "CONNECT" {
+		c := NewCarrier2(id, conn)
+		if method == "CONNECT" {
 			Remote.tunnel.SendMsgToLocal(uint16(c.requestId), []byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		} else {
 			c.conn.Write(bin)
