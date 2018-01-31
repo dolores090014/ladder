@@ -52,7 +52,6 @@ func (this *carrier) readRequestFromBrowser() {
 	}
 }
 
-
 func (this *carrier) getDataFromWebSite() {
 	for {
 		select {
@@ -65,9 +64,8 @@ func (this *carrier) getDataFromWebSite() {
 				this.CloseRemote()
 				return
 			}
-			if this.requestId!=1{
-				fmt.Println("response")
-				fmt.Println(string(bin))
+			if this.requestId != 1 {
+				fmt.Println("response:", this.requestId)
 			}
 			err = Remote.tunnel.SendMsgToLocal(uint16(this.requestId), bin[:n])
 			if err != nil {
@@ -80,7 +78,7 @@ func (this *carrier) getDataFromWebSite() {
 }
 
 func (this *carrier) CloseLocal() {
-	defer func() {recover()}()
+	defer func() { recover() }()
 	el := mUDP.NewProtocol()
 	el.SetAct(mUDP.PROTOCOL_END)
 	el.RequestId = uint16(this.requestId)
@@ -92,7 +90,7 @@ func (this *carrier) CloseLocal() {
 	this.conn.Close()
 }
 func (this *carrier) CloseRemote() {
-	defer func() {recover()}()
+	defer func() { recover() }()
 	this.cancel()
 	this.conn.Close()
 }

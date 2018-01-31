@@ -2,6 +2,7 @@ package mUDP
 
 import (
 	"sync"
+	"fmt"
 )
 
 /*
@@ -132,10 +133,10 @@ func (this *RingBufferWithMiss) Bin() []*Protocol {
 
 func (this *RingBufferWithMiss) Read() *Protocol {
 	var el *Protocol
-	if this.start>this.end{
+	if this.start > this.end {
 		return nil
 	}
-	if this.element[this.start%this.size]!=nil{
+	if this.element[this.start%this.size] != nil {
 		el = this.element[this.start%this.size]
 		this.element[this.start%this.size] = nil
 		this.start += 1
@@ -144,7 +145,7 @@ func (this *RingBufferWithMiss) Read() *Protocol {
 }
 
 func (this *RingBufferWithMiss) Write(data *Protocol, offset int) {
-	if this.size<=this.end-this.start{
+	if this.size <= this.end-this.start {
 		panic("full buffer")
 	}
 	if this.end <= offset {
@@ -191,7 +192,6 @@ func (this *RingBufferWithMiss) MissRate() int {
 type SimpleRingBuffer struct {
 	start     int
 	end       int
-	able      chan int8
 	autoStart bool
 	count     int
 	size      int
@@ -201,7 +201,6 @@ type SimpleRingBuffer struct {
 func NewSimpleRingBuffer(size int) *SimpleRingBuffer {
 	return &SimpleRingBuffer{
 		size:    size,
-		able:    make(chan int8, size),
 		element: make([]*Protocol, size),
 	}
 }
@@ -233,7 +232,24 @@ func (this *SimpleRingBuffer) ReadOffset(offset int) *Protocol {
 	return this.element[offset/this.size]
 }
 
-func (this *SimpleRingBuffer) Read(num int) ([]*Protocol, int, int) {
+func (this *SimpleRingBuffer) Read() (*Protocol, int) {
+	if this.start > this.end {
+		return nil, 0
+	}
+
+	if el := this.element[this.start%this.size]; el != nil {
+		this.element[this.start%this.size] = nil
+		this.start += 1
+		return el, this.start - 1
+	} else {
+		return nil, 0
+	}
+}
+
+/*
+ 弃
+ */
+func (this *SimpleRingBuffer) ReadDiscard(num int) ([]*Protocol, int, int) {
 	o := this.start
 	if this.start >= this.end {
 		return nil, 0, 0
@@ -246,7 +262,6 @@ func (this *SimpleRingBuffer) Read(num int) ([]*Protocol, int, int) {
 		n = num
 	}
 	for i := 1; ; i++ {
-		<-this.able
 		this.count -= 1
 		if i == n {
 			break
@@ -265,7 +280,6 @@ func (this *SimpleRingBuffer) Read(num int) ([]*Protocol, int, int) {
 }
 
 func (this *SimpleRingBuffer) Write(data *Protocol) {
-	this.able <- 1
 	this.count += 1
 	this.element[this.end%this.size] = data
 	this.end += 1

@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"sync"
 	"math"
+	"os"
 )
 
 type Tunnel struct {
@@ -46,8 +47,8 @@ func NewTunnel(c bool) *Tunnel {
 				value: 64,
 			},
 			writeBuffer: NewSimpleRingBuffer(1024 * 64),
-			priorChan:   make(chan []byte, 1024*16),
-			normalChan:  make(chan []byte, 1024*32),
+			priorChan:   make(chan []byte, 1024),
+			normalChan:  make(chan []byte, 1024),
 		}
 	}
 }
@@ -82,7 +83,10 @@ func (this *Tunnel) Send() {
 				bin = data
 			}
 		}
-		this.conn.WriteToUDP(bin, this.remote)
+		_,err:=this.conn.WriteToUDP(bin, this.remote)
+		if err!=nil{
+			fmt.Println("panic->",err)
+		}
 	}
 }
 
@@ -96,18 +100,31 @@ func (this *Tunnel) send() {
 			return
 		default:
 			time.Sleep(100 * time.Millisecond)
-			bin, n, start := this.writeBuffer.Read(int(this.window.window()))
-
-			if n == 0 {
-				continue
-			}
-			bin = bin[:n]
-			for k, v := range bin {
-				el := (*Protocol)(v)
+			start := 0
+			for i := int16(1); i <= this.window.window(); i++ {
+				el, offset := this.writeBuffer.Read()
+				if el == nil {
+					break
+				}
+				if i == 1 {
+					start = offset
+				}
 				el.windowStart = uint32(start)
-				el.offset = uint32(start + k)
+				el.offset = uint32(offset)
 				this.normalChan <- el.EncodeDataPack()
 			}
+
+			//bin, n, start := this.writeBuffer.Read(int(this.window.window()))
+			//if n == 0 {
+			//	continue
+			//}
+			//bin = bin[:n]
+			//for k, v := range bin {
+			//	el := (*Protocol)(v)
+			//	el.windowStart = uint32(start)
+			//	el.offset = uint32(start + k)
+			//	this.normalChan <- el.EncodeDataPack()
+			//}
 		}
 	}
 }
@@ -166,6 +183,7 @@ func (this *Tunnel) SendMsgToLocal(id uint16, b []byte) error {
 local receive
 */
 func (this *Tunnel) ReceiveMsgFromRemote() {
+	f, _ := os.Create("d:/log.txt")
 	for {
 		var bin = make([]byte, UDP_SIZE)
 		n, err := this.conn.Read(bin)
@@ -174,16 +192,11 @@ func (this *Tunnel) ReceiveMsgFromRemote() {
 		}
 		bin = bin[:n]
 		el := NewProtocol().Decode(bin)
-		defer func() {
-			if recover() != nil {
-				fmt.Println(el.RequestId)
-			}
-		}()
-		fmt.Println("write buffer",el.RequestId)
 		this.readBuffer.Write(el, int(el.offset))
+		fmt.Println("get pack: ",int(el.offset))
+		f.WriteString(strconv.Itoa(int(el.offset)) + "-" + strconv.Itoa(int(el.RequestId)) + ",")
 		for {
 			ele := this.readBuffer.Read()
-			fmt.Println("read buffer",ele.RequestId)
 			if ele == nil {
 				break
 			}
@@ -258,6 +271,7 @@ func (this *Tunnel) Connect(addr string) error {
 		return err
 	}
 	this.conn, err = net.DialUDP("udp", nil, udpAdr)
+	this.conn.SetWriteBuffer(1024 * 1024 * 8)
 	if err != nil {
 		return err
 	}
@@ -293,6 +307,7 @@ func (this *Tunnel) listen(port int) (error, int) {
 			return err, 0
 		}
 		this.conn, err = net.ListenUDP("udp", udp)
+		this.conn.SetWriteBuffer(1024*1024*8)
 		if err != nil {
 			return err, 0
 		}

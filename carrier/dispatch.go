@@ -83,8 +83,9 @@ func (this *dis) Register(c *carrier) {
 func (this *dis) Dispatch() {
 	for {
 		el := this.tunnel.Read()
-		fmt.Println(el.RequestId)
+		this.l.Lock()
 		this.m[int(el.RequestId)].ch <- el
+		this.l.Unlock()
 	}
 }
 
@@ -145,7 +146,7 @@ func NewRequest(id int, bin []byte) {
 		}
 		method := req.Method
 		host := req.Host
-		fmt.Println(id,"-",req.URL)
+		fmt.Println(id, "-", req.URL)
 		if method == "" || host == "" {
 			fmt.Fprintln(os.Stderr, "analysis request fail")
 			fmt.Fprintln(os.Stderr, string(bin))
