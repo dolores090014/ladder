@@ -4,7 +4,6 @@ import (
 	"net"
 	"ladder/mUDP"
 	"context"
-	"time"
 	"strconv"
 	"fmt"
 	"ladder/common"
@@ -15,7 +14,7 @@ type carrier struct {
 	conn      *net.TCPConn
 	ctx       context.Context
 	cancel    context.CancelFunc
-	requestId int
+	requestId uint16
 	ch        chan *mUDP.Protocol
 }
 
@@ -23,32 +22,43 @@ type carrier struct {
 receive and write localTCP
  */
 func (this *carrier) writeToLocalTCP() {
+	defer func() {
+		fmt.Println("die2->id",this.requestId)
+	}()
 	for {
-		time.Sleep(40 * time.Millisecond)
 		select {
 		case <-this.ctx.Done():
 			return
 		default:
-			el := <-this.ch
-			this.conn.Write(el.Data())
+			el,ok := <-this.ch
+			if !ok{
+				return
+			}
+			_,err:=this.conn.Write(el.Data())
+			if err!=nil{
+				return
+			}
 		}
 	}
 }
 
 func (this *carrier) readRequestFromBrowser() {
+	defer func() {
+		fmt.Println("die->id",this.requestId)
+	}()
 	for {
 		bin := make([]byte, 1024*8)
 		n, err := this.conn.Read(bin)
-		if n == 0 {
-			continue
-		}
-		bin = bin[:n]
-		common.HttpsGet(common.REMOTE_ADDR+"?id="+strconv.Itoa(this.requestId), bin)
 		if err != nil {
 			fmt.Println("brower err:", err)
 			this.CloseLocal()
 			return
 		}
+		if n == 0 {
+			continue
+		}
+		bin = bin[:n]
+		common.HttpsGet(common.REMOTE_ADDR+"?id="+strconv.Itoa(int(this.requestId)), bin)
 	}
 }
 
@@ -63,9 +73,6 @@ func (this *carrier) getDataFromWebSite() {
 				fmt.Fprintln(os.Stderr, err)
 				this.CloseRemote()
 				return
-			}
-			if this.requestId != 1 {
-				fmt.Println("response:", this.requestId)
 			}
 			err = Remote.tunnel.SendMsgToLocal(uint16(this.requestId), bin[:n])
 			if err != nil {
@@ -87,6 +94,7 @@ func (this *carrier) CloseLocal() {
 	Client.tunnel.Write(el.EncodeEndSign())
 	Client.tunnel.Write(el.EncodeEndSign())
 	this.cancel()
+	close(this.ch)
 	this.conn.Close()
 }
 func (this *carrier) CloseRemote() {
@@ -101,7 +109,10 @@ func (this *carrier) readMsg() {
 		case <-this.ctx.Done():
 			return
 		default:
-			el := <-this.ch
+			el,ok := <-this.ch
+			if !ok{
+				return
+			}
 			switch el.Act {
 			case mUDP.PROTOCOL_END:
 				this.cancel()

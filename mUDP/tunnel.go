@@ -10,53 +10,58 @@ import (
 	"encoding/binary"
 	"sync"
 	"math"
-	"os"
 )
 
-type Tunnel struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	able        bool
-	delay       int16 //ms
-	ackList     map[uint16]*Protocol
+type sp struct {
+	writeBuffer *SimpleRingBuffer
 	priorChan   chan []byte
 	normalChan  chan []byte
-	readChan    chan *Protocol
-	writeBuffer *SimpleRingBuffer
-	readBuffer  *RingBufferWithMiss
 	remote      *net.UDPAddr
 	window      *window
-	conn        *net.UDPConn
+}
+
+type rp struct {
+	readChan   chan *Protocol
+	ackList    map[uint16]*Protocol
+	readBuffer *RingBufferWithMiss
+	delay      int16 //ms
+}
+
+type Tunnel struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	able   bool
+	sp
+	rp
+	conn   *net.UDPConn
 }
 
 func NewTunnel(c bool) *Tunnel {
 	ctx, canncel := context.WithCancel(context.Background())
+	o := &Tunnel{
+		ctx:    ctx,
+		cancel: canncel,
+	}
 	if c {
-		return &Tunnel{
-			ctx:        ctx,
-			cancel:     canncel,
-			readBuffer: NewWriteBuffer(1024 * 32),
-			ackList:    make(map[uint16]*Protocol),
-			readChan:   make(chan *Protocol, 128),
-		}
+		o.readBuffer = NewWriteBuffer(1024 * 32)
+		o.ackList = make(map[uint16]*Protocol)
+		o.readChan = make(chan *Protocol, 128)
+		return o
 	} else {
-		return &Tunnel{
-			ctx:    ctx,
-			cancel: canncel,
-			window: &window{
-				value: 64,
-			},
-			writeBuffer: NewSimpleRingBuffer(1024 * 64),
-			priorChan:   make(chan []byte, 1024),
-			normalChan:  make(chan []byte, 1024),
+		o.window = &window{
+			value: 512,
 		}
+		o.priorChan = make(chan []byte, 1024)
+		o.normalChan = make(chan []byte, 1024)
+		o.writeBuffer = NewSimpleRingBuffer(1024 * 64)
+		return o
 	}
 }
 
 /*
 from buffer to connect
  */
-func (this *Tunnel) Send() {
+func (this *Tunnel) flush() {
 	for {
 		var bin []byte
 		select {
@@ -83,9 +88,9 @@ func (this *Tunnel) Send() {
 				bin = data
 			}
 		}
-		_,err:=this.conn.WriteToUDP(bin, this.remote)
-		if err!=nil{
-			fmt.Println("panic->",err)
+		_, err := this.conn.WriteToUDP(bin, this.remote)
+		if err != nil {
+			fmt.Println("panic->", err)
 		}
 	}
 }
@@ -183,7 +188,6 @@ func (this *Tunnel) SendMsgToLocal(id uint16, b []byte) error {
 local receive
 */
 func (this *Tunnel) ReceiveMsgFromRemote() {
-	f, _ := os.Create("d:/log.txt")
 	for {
 		var bin = make([]byte, UDP_SIZE)
 		n, err := this.conn.Read(bin)
@@ -193,8 +197,6 @@ func (this *Tunnel) ReceiveMsgFromRemote() {
 		bin = bin[:n]
 		el := NewProtocol().Decode(bin)
 		this.readBuffer.Write(el, int(el.offset))
-		fmt.Println("get pack: ",int(el.offset))
-		f.WriteString(strconv.Itoa(int(el.offset)) + "-" + strconv.Itoa(int(el.RequestId)) + ",")
 		for {
 			ele := this.readBuffer.Read()
 			if ele == nil {
@@ -202,7 +204,6 @@ func (this *Tunnel) ReceiveMsgFromRemote() {
 			}
 			this.readChan <- ele
 		}
-
 		if el.offset%64 == 0 { //频率限制
 			miss := this.readBuffer.Miss(int(el.windowStart)) //丢包
 			this.GetMissPackAndRequestAgain(miss)
@@ -281,6 +282,8 @@ func (this *Tunnel) Connect(addr string) error {
 	p.time = time.Now()
 	b := p.EncodeHandPack()
 	time.Sleep(10 * time.Millisecond)
+	this.conn.SetWriteBuffer(1024*1024)
+	this.conn.SetReadBuffer(1024*1024)
 	this.conn.Write(b)
 	this.conn.Write(b)
 	this.conn.Write(b)
@@ -291,8 +294,10 @@ func (this *Tunnel) Connect(addr string) error {
 
 func (this *Tunnel) Listen(port int) (error, int) {
 	err, p := this.listen(port)
+	this.conn.SetReadBuffer(1024*1024)
+	this.conn.SetWriteBuffer(1024*1024)
 	if err == nil {
-		go this.Send()
+		go this.flush()
 		go this.send()
 		go this.ReceiveMsgFromLocal()
 		time.Sleep(50 * time.Millisecond)
@@ -307,7 +312,7 @@ func (this *Tunnel) listen(port int) (error, int) {
 			return err, 0
 		}
 		this.conn, err = net.ListenUDP("udp", udp)
-		this.conn.SetWriteBuffer(1024*1024*8)
+		this.conn.SetWriteBuffer(1024 * 1024 * 8)
 		if err != nil {
 			return err, 0
 		}

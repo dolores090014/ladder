@@ -12,11 +12,13 @@ import (
 	"net"
 	"context"
 	"net/http"
+	"time"
 )
 
 type dis struct {
 	l      *sync.Mutex
-	m      map[int]*carrier
+	m      map[uint16]*carrier
+	poor   []uint16
 	tunnel *mUDP.Tunnel
 }
 
@@ -26,18 +28,20 @@ var Remote *dis
 func init() {
 	Client = &dis{
 		l:      new(sync.Mutex),
-		m:      make(map[int]*carrier),
+		m:      make(map[uint16]*carrier),
+		poor:   make([]uint16, 1),
 		tunnel: mUDP.NewTunnel(true),
 	}
 	Remote = &dis{
 		l:      new(sync.Mutex),
-		m:      make(map[int]*carrier),
+		m:      make(map[uint16]*carrier),
 		tunnel: mUDP.NewTunnel(false),
 	}
 }
 
 func (this *dis) Connect(addr string) {
 	err := this.tunnel.Connect(addr)
+	this.createID()
 	go this.Dispatch()
 	if err != nil {
 		panic(err)
@@ -45,6 +49,23 @@ func (this *dis) Connect(addr string) {
 	if this.tunnel.Able() {
 		panic("不通")
 	}
+}
+
+func (this *dis) createID() {
+	this.l.Lock()
+	defer this.l.Unlock()
+
+	if len(this.poor) >= 20 {
+		return
+	}
+	var MAX = 99
+	p := make([]uint16, 100)
+	t := time.Now()
+	m := (t.Minute()%10)*10000 + t.Second()*100
+	for i := 0; i <= MAX; i++ {
+		p[i] = uint16(m + i)
+	}
+	this.poor = p
 }
 
 func (this *dis) Listen(port int) {
@@ -58,20 +79,17 @@ func (this *dis) Listen(port int) {
 func (this *dis) remove(e *carrier) {
 	this.l.Lock()
 	defer this.l.Unlock()
-	delete(this.m, int(e.requestId))
+	delete(this.m, uint16(e.requestId))
 }
 
-func (this *dis) getID(con *carrier) int {
-	max := 1<<16 - 1
+func (this *dis) getID(con *carrier) uint16 {
 	this.l.Lock()
-	defer this.l.Unlock()
-	for i := 1; i <= max; i++ {
-		if _, ok := this.m[i]; !ok {
-			this.m[i] = con
-			return i
-		}
-	}
-	return 0
+	id := this.poor[0]
+	this.poor = this.poor[1:]
+	this.m[id] = con
+	this.l.Unlock()
+	this.createID()
+	return id
 }
 
 func (this *dis) Register(c *carrier) {
@@ -81,10 +99,16 @@ func (this *dis) Register(c *carrier) {
 }
 
 func (this *dis) Dispatch() {
+	//i:=0
 	for {
 		el := this.tunnel.Read()
+		//i++
+		//fmt.Println("-->",i)
+		//continue
 		this.l.Lock()
-		this.m[int(el.RequestId)].ch <- el
+		if v,ok:=this.m[el.RequestId];ok{
+			v.ch<-el
+		}
 		this.l.Unlock()
 	}
 }
@@ -106,7 +130,7 @@ func NewCarrier(tcp *net.TCPConn) *carrier {
 	return c
 }
 
-func NewCarrier2(id int, tcp *net.TCPConn) *carrier {
+func NewCarrier2(id uint16, tcp *net.TCPConn) *carrier {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &carrier{
 		conn:   tcp,
@@ -123,7 +147,7 @@ func NewCarrier2(id int, tcp *net.TCPConn) *carrier {
 
 func NewRequest(id int, bin []byte) {
 	Remote.l.Lock()
-	if v, ok := Remote.m[id]; ok {
+	if v, ok := Remote.m[uint16(id)]; ok {
 		Remote.l.Unlock()
 		v.conn.Write(bin)
 	} else {
@@ -170,7 +194,7 @@ func NewRequest(id int, bin []byte) {
 			fmt.Fprintln(os.Stderr, "connect website fail", err)
 			return
 		}
-		c := NewCarrier2(id, conn)
+		c := NewCarrier2(uint16(id), conn)
 		if method == "CONNECT" {
 			Remote.tunnel.SendMsgToLocal(uint16(c.requestId), []byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 		} else {

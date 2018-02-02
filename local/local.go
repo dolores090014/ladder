@@ -10,7 +10,7 @@ import (
 )
 
 func forward(localTCP *net.TCPConn) {
-	localTCP.SetDeadline(time.Unix(time.Now().Unix()+30, 0))
+	localTCP.SetDeadline(time.Unix(time.Now().Unix()+15, 0))
 	carrier.NewCarrier(localTCP)
 }
 
@@ -30,9 +30,9 @@ func tcpServer() {
 
 func main() {
 	go func() {
-		for{
-			fmt.Println("gr:",runtime.NumGoroutine())
-			time.Sleep(1*time.Second)
+		for {
+			fmt.Println("gr:", runtime.NumGoroutine())
+			time.Sleep(1 * time.Second)
 		}
 	}()
 	carrier.Client.Connect("127.0.0.1:2000")
