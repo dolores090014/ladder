@@ -49,7 +49,7 @@ func NewTunnel(c bool) *Tunnel {
 		return o
 	} else {
 		o.window = &window{
-			value: 512,
+			value: 256,
 		}
 		o.priorChan = make(chan []byte, 1024)
 		o.normalChan = make(chan []byte, 1024)
@@ -59,7 +59,7 @@ func NewTunnel(c bool) *Tunnel {
 }
 
 /*
-from buffer to connect
+from channel to connect
  */
 func (this *Tunnel) flush() {
 	for {
@@ -96,7 +96,7 @@ func (this *Tunnel) flush() {
 }
 
 /*
-write buffer to channel
+from buffer to channel
  */
 func (this *Tunnel) send() {
 	for {
@@ -104,7 +104,7 @@ func (this *Tunnel) send() {
 		case <-this.ctx.Done():
 			return
 		default:
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 			start := 0
 			for i := int16(1); i <= this.window.window(); i++ {
 				el, offset := this.writeBuffer.Read()
